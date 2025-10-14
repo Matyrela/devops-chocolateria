@@ -1,45 +1,46 @@
 package me.devops.chocolateria.controller;
 
-import io.micrometer.core.instrument.MeterRegistry;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import me.devops.chocolateria.domain.Order;
-import me.devops.chocolateria.domain.Product;
-import me.devops.chocolateria.store.InMemoryStore;
+import me.devops.chocolateria.service.OrderService;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.net.URI;
 import java.time.Duration;
-import java.time.Instant;
 import java.util.List;
 
 @RestController
 @RequestMapping("/api/orders")
+@Tag(name = "Pedidos", description = "API para gestionar pedidos de la chocolatería")
 public class OrderController {
-  private final MeterRegistry registry;
-  public OrderController(MeterRegistry registry) { this.registry = registry; }
+    private final OrderService orderService;
 
-  @GetMapping
-  public List<Order> list() { return InMemoryStore.orders; }
+    public OrderController(OrderService orderService) {
+        this.orderService = orderService;
+    }
 
-  @PostMapping
-  public ResponseEntity<Order> create(@RequestParam Long productId, @RequestParam int quantity) {
-    Product p = InMemoryStore.products.stream().filter(prod -> prod.getId().equals(productId)).findFirst().orElseThrow();
-    Order o = new Order();
-    o.setId(InMemoryStore.orderIdGen.getAndIncrement());
-    o.setProduct(p);
-    o.setQuantity(quantity);
-    o.setCreatedAt(Instant.now());
-    InMemoryStore.orders.add(o);
-    registry.counter("orders_items_total", "productId", p.getId().toString(), "productName", p.getName()).increment(quantity);
-    return ResponseEntity.created(URI.create("/api/orders/" + o.getId())).body(o);
-  }
+    @Operation(summary = "Listar todos los pedidos", description = "Retorna una lista de todos los pedidos realizados")
+    @GetMapping
+    public List<Order> list() {
+        return orderService.getAllOrders();
+    }
 
-  @GetMapping("/rate/{productId}")
-  public long countLast5m(@PathVariable Long productId) {
-    Instant now = Instant.now();
-    return InMemoryStore.orders.stream()
-      .filter(o -> o.getProduct().getId().equals(productId) && o.getCreatedAt().isAfter(now.minus(Duration.ofMinutes(5))))
-      .mapToLong(Order::getQuantity)
-      .sum();
-  }
+    @Operation(summary = "Crear un nuevo pedido", description = "Crea un nuevo pedido para un producto específico")
+    @PostMapping
+    public ResponseEntity<Order> create(
+            @Parameter(description = "ID del producto a ordenar") @RequestParam Long productId,
+            @Parameter(description = "Cantidad de productos a ordenar") @RequestParam int quantity) {
+        Order order = orderService.createOrder(productId, quantity);
+        return ResponseEntity.created(URI.create("/api/orders/" + order.getId())).body(order);
+    }
+
+    @Operation(summary = "Obtener tasa de pedidos", description = "Obtiene la cantidad total de productos ordenados en los últimos 5 minutos")
+    @GetMapping("/rate/{productId}")
+    public long countLast5m(
+            @Parameter(description = "ID del producto a consultar") @PathVariable Long productId) {
+        return orderService.getOrderRateForProduct(productId, Duration.ofMinutes(5));
+    }
 }
