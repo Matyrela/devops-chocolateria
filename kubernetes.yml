@@ -21,7 +21,7 @@ spec:
     spec:
       containers:
         - name: chocoapp
-          image: chocoapp
+          image: registry.konoba.space/chocoapp:latest
           imagePullPolicy: Always
           ports:
             - containerPort: 8080
