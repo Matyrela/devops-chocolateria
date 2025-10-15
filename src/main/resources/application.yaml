@@ -1,0 +1,14 @@
+spring:
+  docker:
+    compose:
+      enabled: false
+  application:
+    name: chocolateria
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    prometheus:
+      access: read_only
