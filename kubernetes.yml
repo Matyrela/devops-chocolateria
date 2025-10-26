@@ -20,7 +20,7 @@ spec:
     spec:
       containers:
         - name: chocoapp
-          image: registry.konoba.space/chocoapp:latest
+          image: registry.konoba.space/chocoapp:p95
           imagePullPolicy: Always
           ports:
             - containerPort: 8080
@@ -58,8 +58,8 @@ metadata:
 data:
   prometheus.yml: |
     global:
-      scrape_interval: 5s
-      evaluation_interval: 5s
+      scrape_interval: 1s
+      evaluation_interval: 1s
       external_labels:
         cluster: k3s
         namespace: devops-ucu
@@ -88,14 +88,14 @@ data:
       - name: chocoapp.rules
         rules:
           - alert: HighOrderRate
-            expr: sum(rate(chocoapp_orders_total[5m])) > 20
-            for: 2m
+            expr: sum(rate(chocoapp_orders_total[30s])) > 5
+            for: 30s
             labels:
               severity: warning
               service: chocoapp
             annotations:
-              summary: "Tasa alta de órdenes (>20/5m)"
-              description: "La tasa de órdenes es {{ $value }} en los últimos 5 minutos."
+              summary: "Tasa alta de órdenes (>5/30s)"
+              description: "La tasa de órdenes es {{ $value }} en los últimos 30s."
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -153,9 +153,6 @@ spec:
       targetPort: 9090
       nodePort: 30900
 ---
-# =========================
-# GRAFANA
-# =========================
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -185,7 +182,7 @@ data:
         folder: 'Chocolatería'
         type: file
         disableDeletion: false
-        updateIntervalSeconds: 10
+        updateIntervalSeconds: 5
         allowUiUpdates: true
         options:
           path: /var/lib/grafana/dashboards
@@ -198,69 +195,101 @@ metadata:
 data:
   tecnico.json: |
     {
-      "title": "Chocolatería - Visión técnica (HTTP/JVM)",
+      "title": "Chocolatería - Infraestructura",
       "timezone": "browser",
       "schemaVersion": 39,
-      "version": 1,
+      "version": 5,
+      "refresh": "1s",
+      "time": { "from": "now-10m", "to": "now" },
       "panels": [
         {
           "type": "timeseries",
-          "title": "Requests/5m (rate)",
-          "targets": [
-            { "expr": "sum(rate(http_server_requests_seconds_count{application=\"chocolateria\"}[5m]))" }
-          ]
+          "title": "Requests (30s)",
+          "targets": [{ "expr": "sum(rate(http_server_requests_seconds_count[30s]))" }],
+          "gridPos": { "h": 10, "w": 24, "x": 0, "y": 0 }
         },
         {
           "type": "timeseries",
-          "title": "Errores 5xx/5m (rate)",
-          "targets": [
-            { "expr": "sum(rate(http_server_requests_seconds_count{application=\"chocolateria\",status=~\"5..\"}[5m]))" }
-          ]
+          "title": "Latencia p95 (30s)",
+          "targets": [{ "expr": "histogram_quantile(0.95, sum by (le) (rate(http_server_requests_seconds_bucket[30s])))" }],
+          "gridPos": { "h": 10, "w": 24, "x": 0, "y": 10 }
         },
         {
           "type": "timeseries",
-          "title": "p95 Latency (s)",
-          "targets": [
-            { "expr": "histogram_quantile(0.95, sum by (le) (rate(http_server_requests_seconds_bucket{application=\"chocolateria\"}[5m])))" }
-          ]
+          "title": "Errores 5xx (30s)",
+          "targets": [{ "expr": "sum(rate(http_server_requests_seconds_count{status=~\"5..\"}[30s]))" }],
+          "description": "Si no hay 5xx, este panel puede estar vacío.",
+          "gridPos": { "h": 8, "w": 24, "x": 0, "y": 20 }
         },
         {
           "type": "timeseries",
           "title": "CPU del proceso",
-          "targets": [
-            { "expr": "process_cpu_usage{application=\"chocolateria\"}" }
-          ]
+          "targets": [{ "expr": "process_cpu_usage" }],
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 28 }
         },
         {
           "type": "timeseries",
           "title": "JVM Heap usado (bytes)",
-          "targets": [
-            { "expr": "sum by (area) (jvm_memory_used_bytes{application=\"chocolateria\",area=\"heap\"})" }
-          ]
+          "targets": [{ "expr": "sum by (area) (jvm_memory_used_bytes{area=\"heap\"})" }],
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 28 }
         }
       ]
     }
   negocio.json: |
     {
-      "title": "Chocolatería - Negocio (Órdenes)",
+      "title": "Chocolatería - Órdenes",
       "timezone": "browser",
       "schemaVersion": 39,
-      "version": 1,
+      "version": 6,
+      "refresh": "1s",
+      "time": {
+        "from": "now-10m",
+        "to": "now"},
       "panels": [
         {
-          "type": "stat",
-          "title": "Órdenes/5m (tasa)",
+          "type": "timeseries",
+          "title": "Órdenes",
+          "legend": {
+            "show": true},
           "targets": [
-            { "expr": "sum(rate(chocoapp_orders_total[5m]))" }
-          ]
+            {
+              "expr": "sum(rate(http_server_requests_seconds_count{method=\"POST\",uri=\"/api/orders\"}[30s]))"}
+          ],
+          "gridPos": {
+            "h": 10,
+            "w": 24,
+            "x": 0,
+            "y": 0}
         },
         {
           "type": "timeseries",
-          "title": "Órdenes por producto (top5, tasa 5m)",
-          "legend": { "show": true },
+          "title": "Órdenes por estado",
+          "legend": {
+            "show": true},
           "targets": [
-            { "expr": "topk(5, sum by (product) (rate(chocoapp_orders_by_product_total[5m])))" }
-          ]
+            {
+              "expr": "sum by (status) (rate(http_server_requests_seconds_count{method=\"POST\",uri=\"/api/orders\"}[30s]))"}
+          ],
+          "gridPos": {
+            "h": 10,
+            "w": 24,
+            "x": 0,
+            "y": 10}
+        },
+        {
+          "type": "timeseries",
+          "title": "Latencia p95 de órdenes",
+          "legend": {
+            "show": false},
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.95, sum by (le) (rate(http_server_requests_seconds_bucket{method=\"POST\",uri=\"/api/orders\"}[30s])))"}
+          ],
+          "gridPos": {
+            "h": 8,
+            "w": 24,
+            "x": 0,
+            "y": 20}
         }
       ]
     }
@@ -322,3 +351,105 @@ spec:
       port: 3000
       targetPort: 3000
       nodePort: 30300
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: chocoapp-loadgen-once
+  namespace: devops-ucu
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 600
+  template:
+    spec:
+      restartPolicy: Never
+      initContainers:
+        - name: wait-for-chocoapp
+          image: alpine:3.20
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh","-c"]
+          args:
+            - |
+              set -e
+              apk add --no-cache curl >/dev/null
+              BASE="http://chocoapp-svc.devops-ucu.svc.cluster.local:80"
+              echo "[wait] Esperando a ${BASE}/actuator/health ..."
+              for i in $(seq 1 300); do
+                if curl -fsS "${BASE}/actuator/health" | grep -q '"status":"UP"'; then
+                  echo "[wait] chocoapp está UP ✅"; exit 0
+                fi
+                echo "[wait] intento $i: reintento en 2s..."
+                sleep 2
+              done
+              echo "[wait] timeout esperando a chocoapp"; exit 1
+      containers:
+        - name: loadgen
+          image: alpine:3.20
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: HEALTH_PINGS
+              value: "40"
+            - name: ORDERS
+              value: "150"
+            - name: SLEEP
+              value: "0.01"
+            - name: BASE
+              value: "http://chocoapp-svc.devops-ucu.svc.cluster.local:80"
+            - name: PE
+              value: "/api/products"
+            - name: OE
+              value: "/api/orders"
+          command: ["/bin/sh","-c"]
+          args:
+          - |
+            set -e
+            apk add --no-cache curl coreutils >/dev/null
+
+            echo "[warmup] ${BASE}/actuator/prometheus"
+            curl -fsS "${BASE}/actuator/prometheus" >/dev/null || true
+
+            i=0; while [ $i -lt "${HEALTH_PINGS}" ]; do
+              curl -fsS -o /dev/null "${BASE}/actuator/health" || true
+              i=$((i+1)); sleep "${SLEEP}"
+            done
+
+            new_product() {
+              name="$1"; price="$2"
+              code=$(curl -sS -o /dev/null -w "%{http_code}" \
+                     -H 'Content-Type: application/json' \
+                     -d "{\"name\":\"${name}\",\"priceCents\":${price}}" \
+                     "${BASE}${PE}" || echo "000")
+              echo "[product] ${name} -> ${code}"
+            }
+
+            new_product "capuccino" 215
+            new_product "brownie" 245
+            new_product "latte" 137
+            new_product "medialuna" 208
+            new_product "submarino" 206
+            new_product "mocaccino" 148
+            new_product "chocolate_caliente" 198
+
+            IDS="$(curl -fsS "${BASE}${PE}" | sed -n 's/.*\"id\":[ ]*\([0-9][0-9]*\).*/\1/p' | tr '\n' ' ')"
+            if [ -z "${IDS}" ]; then
+              echo "[error] no hay IDs de productos. abortando."
+              exit 0
+            fi
+            echo "[ids] ${IDS}"
+
+            pick_id() { for x in ${IDS}; do echo "$x"; done | shuf -n 1; }
+            rand_qty() { shuf -i 1-3 -n 1; }
+
+            echo "[orders] creando ${ORDERS} órdenes…"
+            i=0
+            while [ $i -lt "${ORDERS}" ]; do
+              id="$(pick_id)"; q="$(rand_qty)"
+              code=$(curl -sS -o /dev/null -w "%{http_code}" \
+                     -X POST "${BASE}${OE}?productId=${id}&quantity=${q}" || echo "000")
+              echo "[order] #$i id=${id} qty=${q} -> ${code}"
+              i=$((i+1)); sleep "${SLEEP}"
+            done
+
+            curl -sS -o /dev/null "${BASE}/does-not-exist" || true
+
+            echo "[done] carga enviada"
