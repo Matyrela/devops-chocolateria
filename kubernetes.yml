@@ -3,7 +3,6 @@ kind: Namespace
 metadata:
   name: devops-ucu
 ---
-# CHOCOAPP
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -51,7 +50,53 @@ spec:
       targetPort: 8080
       nodePort: 30880
 ---
-# PROMETHEUS
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: devops-ucu
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 5s
+      evaluation_interval: 5s
+      external_labels:
+        cluster: k3s
+        namespace: devops-ucu
+
+    rule_files:
+      - /etc/prometheus/rules/*.yml
+
+    scrape_configs:
+      - job_name: 'prometheus'
+        static_configs:
+          - targets: ['localhost:9090']
+
+      - job_name: 'chocoapp'
+        metrics_path: '/actuator/prometheus'
+        static_configs:
+          - targets: ['chocoapp-svc.devops-ucu.svc.cluster.local:80']
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-rules
+  namespace: devops-ucu
+data:
+  rules.yml: |
+    groups:
+      - name: chocoapp.rules
+        rules:
+          - alert: HighOrderRate
+            expr: sum(rate(chocoapp_orders_total[5m])) > 20
+            for: 2m
+            labels:
+              severity: warning
+              service: chocoapp
+            annotations:
+              summary: "Tasa alta de órdenes (>20/5m)"
+              description: "La tasa de órdenes es {{ $value }} en los últimos 5 minutos."
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -70,35 +115,28 @@ spec:
       containers:
         - name: prometheus
           image: prom/prometheus:latest
+          args:
+            - "--config.file=/etc/prometheus/prometheus.yml"
+            - "--storage.tsdb.path=/prometheus"
+            - "--web.enable-lifecycle"
           ports:
             - containerPort: 9090
           volumeMounts:
             - name: prometheus-config
               mountPath: /etc/prometheus/
+            - name: prometheus-rules
+              mountPath: /etc/prometheus/rules
+            - name: prometheus-data
+              mountPath: /prometheus
       volumes:
         - name: prometheus-config
           configMap:
             name: prometheus-config
----
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: prometheus-config
-  namespace: devops-ucu
-data:
-  prometheus.yml: |
-    global:
-      scrape_interval: 5s
-
-    scrape_configs:
-      - job_name: 'prometheus'
-        static_configs:
-          - targets: ['localhost:9090']
-
-      - job_name: 'chocoapp'
-        metrics_path: '/actuator/prometheus'
-        static_configs:
-          - targets: ['chocoapp-svc.devops-ucu.svc.cluster.local:80']
+        - name: prometheus-rules
+          configMap:
+            name: prometheus-rules
+        - name: prometheus-data
+          emptyDir: {}
 ---
 apiVersion: v1
 kind: Service
@@ -115,7 +153,118 @@ spec:
       targetPort: 9090
       nodePort: 30900
 ---
+# =========================
 # GRAFANA
+# =========================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-datasource
+  namespace: devops-ucu
+data:
+  datasource.yml: |
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        type: prometheus
+        access: proxy
+        url: http://prometheus-svc.devops-ucu.svc.cluster.local:9090
+        isDefault: true
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-provider
+  namespace: devops-ucu
+data:
+  dashboards.yml: |
+    apiVersion: 1
+    providers:
+      - name: 'k8s-imported'
+        orgId: 1
+        folder: 'Chocolatería'
+        type: file
+        disableDeletion: false
+        updateIntervalSeconds: 10
+        allowUiUpdates: true
+        options:
+          path: /var/lib/grafana/dashboards
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboards
+  namespace: devops-ucu
+data:
+  tecnico.json: |
+    {
+      "title": "Chocolatería - Visión técnica (HTTP/JVM)",
+      "timezone": "browser",
+      "schemaVersion": 39,
+      "version": 1,
+      "panels": [
+        {
+          "type": "timeseries",
+          "title": "Requests/5m (rate)",
+          "targets": [
+            { "expr": "sum(rate(http_server_requests_seconds_count{application=\"chocolateria\"}[5m]))" }
+          ]
+        },
+        {
+          "type": "timeseries",
+          "title": "Errores 5xx/5m (rate)",
+          "targets": [
+            { "expr": "sum(rate(http_server_requests_seconds_count{application=\"chocolateria\",status=~\"5..\"}[5m]))" }
+          ]
+        },
+        {
+          "type": "timeseries",
+          "title": "p95 Latency (s)",
+          "targets": [
+            { "expr": "histogram_quantile(0.95, sum by (le) (rate(http_server_requests_seconds_bucket{application=\"chocolateria\"}[5m])))" }
+          ]
+        },
+        {
+          "type": "timeseries",
+          "title": "CPU del proceso",
+          "targets": [
+            { "expr": "process_cpu_usage{application=\"chocolateria\"}" }
+          ]
+        },
+        {
+          "type": "timeseries",
+          "title": "JVM Heap usado (bytes)",
+          "targets": [
+            { "expr": "sum by (area) (jvm_memory_used_bytes{application=\"chocolateria\",area=\"heap\"})" }
+          ]
+        }
+      ]
+    }
+  negocio.json: |
+    {
+      "title": "Chocolatería - Negocio (Órdenes)",
+      "timezone": "browser",
+      "schemaVersion": 39,
+      "version": 1,
+      "panels": [
+        {
+          "type": "stat",
+          "title": "Órdenes/5m (tasa)",
+          "targets": [
+            { "expr": "sum(rate(chocoapp_orders_total[5m]))" }
+          ]
+        },
+        {
+          "type": "timeseries",
+          "title": "Órdenes por producto (top5, tasa 5m)",
+          "legend": { "show": true },
+          "targets": [
+            { "expr": "topk(5, sum by (product) (rate(chocoapp_orders_by_product_total[5m])))" }
+          ]
+        }
+      ]
+    }
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -144,25 +293,20 @@ spec:
           volumeMounts:
             - name: grafana-datasource
               mountPath: /etc/grafana/provisioning/datasources/
+            - name: grafana-dashboard-provider
+              mountPath: /etc/grafana/provisioning/dashboards/
+            - name: grafana-dashboards
+              mountPath: /var/lib/grafana/dashboards
       volumes:
         - name: grafana-datasource
           configMap:
             name: grafana-datasource
----
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: grafana-datasource
-  namespace: devops-ucu
-data:
-  datasource.yml: |
-    apiVersion: 1
-    datasources:
-      - name: Prometheus
-        type: prometheus
-        access: proxy
-        url: http://prometheus-svc.devops-ucu.svc.cluster.local:9090
-        isDefault: true
+        - name: grafana-dashboard-provider
+          configMap:
+            name: grafana-dashboard-provider
+        - name: grafana-dashboards
+          configMap:
+            name: grafana-dashboards
 ---
 apiVersion: v1
 kind: Service
